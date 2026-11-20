@@ -53,6 +53,9 @@ set(BOOTLOADER OFF CACHE BOOL "Set to ON if bootloader is enabled")
 set(APP OFF CACHE BOOL "Set to ON if app is enabled")
 set(RT-THREAD ON CACHE BOOL "Set to ON if RT-Thread is enabled")
 
+# Enable printf and scanf float
+option(ENABLE_PRINTF_FLOAT "printf report %f" OFF)
+option(ENABLE_SCANF_FLOAT  "scanf report %f"  OFF)
 # Include toolchain file
 include("drivers/toolchain/gcc-arm-none-eabi.cmake")
 
@@ -122,9 +125,26 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${SOURCES}
 )
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    ${HEADERS}
-)
+
+# USB support switch, enabled by default.
+# Set it to ON only when the application uses the USB driver and provides
+# its own usb_app_conf.h in one of the directories listed in HEADERS.
+
+option(USE_USB "Enable USB support in the driver layer" ON)
+if(USE_USB)
+    # Expose application include directories to the driver layer so that
+    # driver sources (e.g. hc32_ll_usb.c) can find application-provided
+    # configuration headers such as usb_app_conf.h.
+    target_include_directories(hc32f460_driver PUBLIC
+        ${HEADERS}
+    )
+else()
+    # Application include directories are only used by the application target.
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+        ${HEADERS}
+    )
+endif()
+
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined libraries
 )
