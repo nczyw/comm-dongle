@@ -1,0 +1,6 @@
+[submodule "drivers"]
+	path = drivers
+	url = https://github.com/nczyw/hc32f472-drivers.git
+[submodule "rt-thread"]
+	path = rt-thread
+	url = https://github.com/nczyw/rt-thread.git

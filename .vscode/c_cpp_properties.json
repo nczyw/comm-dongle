@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "HC32F472",
+            "compilerPath": "arm-none-eabi-gcc",
+            "intelliSenseMode": "windows-gcc-arm",
+            "cStandard": "gnu17",
+            "cppStandard": "gnu++17",
+            "compileCommands": [
+                "build/compile_commands.json"
+            ]
+        }
+    ],
+    "version": 4
+}
