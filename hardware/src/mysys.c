@@ -21,7 +21,7 @@ void bsp_clk_init(void) {
     stcPLLHInit.PLLCFGR_f.PLLM = 1UL - 1UL;
     stcPLLHInit.PLLCFGR_f.PLLN = 40UL - 1UL;
     stcPLLHInit.PLLCFGR_f.PLLP = 4UL - 1UL;
-    stcPLLHInit.PLLCFGR_f.PLLQ = 4UL - 1UL;
+    stcPLLHInit.PLLCFGR_f.PLLQ = 10UL - 1UL;   // VCO 480MHz / 10 = 48MHz（USB 专用）
     stcPLLHInit.PLLCFGR_f.PLLR = 4UL - 1UL;
     stcPLLHInit.PLLCFGR_f.PLLSRC = CLK_PLL_SRC_XTAL;
     (void)CLK_PLLInit(&stcPLLHInit);

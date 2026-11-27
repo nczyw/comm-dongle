@@ -109,6 +109,7 @@ file(GLOB SOURCES
     # Add user source files
     ${CMAKE_CURRENT_LIST_DIR}/src/*.c
     ${CMAKE_CURRENT_LIST_DIR}/hardware/src/*.c
+    ${CMAKE_CURRENT_LIST_DIR}/hardware/usb/src/*.c
     ${CMAKE_CURRENT_LIST_DIR}/software/src/*.c
 )
 
@@ -116,6 +117,7 @@ set(HEADERS
     # Add user headers
     ${CMAKE_CURRENT_LIST_DIR}/inc
     ${CMAKE_CURRENT_LIST_DIR}/hardware/inc
+    ${CMAKE_CURRENT_LIST_DIR}/hardware/usb/inc
     ${CMAKE_CURRENT_LIST_DIR}/software/inc
 )
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
