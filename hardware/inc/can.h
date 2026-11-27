@@ -9,12 +9,12 @@
 // CAN 发送引脚定义
 #define CAN_TX_PORT             (GPIO_PORT_B)
 #define CAN_TX_PIN              (GPIO_PIN_03)
-#define CAN_TX_PIN_FUNC         (GPIO_FUNC_60)
+#define CAN_TX_PIN_FUNC         (GPIO_FUNC_62)
 
 // CAN 接收引脚定义
 #define CAN_RX_PORT             (GPIO_PORT_B)
 #define CAN_RX_PIN              (GPIO_PIN_04)
-#define CAN_RX_PIN_FUNC         (GPIO_FUNC_61)
+#define CAN_RX_PIN_FUNC         (GPIO_FUNC_63)
 
 // CAN 时钟引脚定义
 #define CAN_CLK_UNIT            (CLK_CAN2)
@@ -23,7 +23,7 @@
 // CAN 中断定义
 #define CAN_INT_PRIO            (DDL_IRQ_PRIO_00)
 #define CAN_INT_IRQn            (CAN2_INT_IRQn)
-#define CAN_IRQ_HANDLE          CAN2_Handler
+#define CAN_IRQ_HANDLER          CAN2_Handler
 
 // CAN 中断类型选择
 #define CAN_INT_SEL             (CAN_INT_PTB_TX | CAN_INT_RX | CAN_INT_ERR_INT)
@@ -33,6 +33,9 @@
 
 // CAN 配置在 EEPROM 中的起始地址（按实际分区规划调整）
 #define CAN_EEPROM_BASE_ADDR    (0x0000U)
+
+#define CAN_TX_TIMEOUT_MS           (100U)
+#define CAN_RX_FRAME_NUM            (8U)
 
 // 经典 CAN / CAN-FD 仲裁段 通用波特率配置
 typedef struct __attribute__((packed)) {
@@ -73,11 +76,14 @@ typedef struct __attribute__((packed)) {
     uint8_t             rfu[1];                  // 保留字段
 } can_eeprom_cfg_t;
 
-int32_t can_cfg_load(can_eeprom_cfg_t *cfg);            // EEPROM -> 内存，并校验
+extern stc_can_rx_frame_t can_rx_frame[CAN_RX_FRAME_NUM];   // 接收缓存
+extern volatile uint16_t can_rx_head; // 接收缓存头指针
+extern volatile uint16_t can_rx_tail; // 接收缓存尾指针
+
+//int32_t can_cfg_load(can_eeprom_cfg_t *cfg);            // EEPROM -> 内存，并校验
 int32_t can_cfg_save(const can_eeprom_cfg_t *cfg);      // 校验后 内存 -> EEPROM
-
-void can_init_config(const can_eeprom_cfg_t *pstcCfg);         // 初始化 CAN 配置
-
-void can_init(void);
+//void can_init_config(const can_eeprom_cfg_t *pstcCfg);         // 初始化 CAN 配置
+void can_init(void);  // 首次初始化CAN调用的函数
+void can_reinit(void);  // 重新初始化CAN调用的函数
 
 #endif

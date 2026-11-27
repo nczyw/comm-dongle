@@ -1,6 +1,13 @@
 #include "can.h"
+#include "task_can.h"
 #include "at24c512.h"
+#include "rtthread.h"
+#include "task_os_led.h"
 
+
+stc_can_rx_frame_t can_rx_frame[CAN_RX_FRAME_NUM];
+volatile uint16_t can_rx_head = 0; // 接收缓存头指针
+volatile uint16_t can_rx_tail = 0; // 接收缓存尾指针
 /*
 const static char *m_s8ErrorTypeStr[] = {
     "NO error.",
@@ -24,8 +31,8 @@ static int32_t can_cfg_check(const can_eeprom_cfg_t *pstcCfg);
 static void can_cfg_default(can_eeprom_cfg_t *pstcCfg);
 static void can_clock_config(const can_eeprom_cfg_t *pstcCfg);
 static void can_pin_config(void);
+static void can_init_config(const can_eeprom_cfg_t *pstcCfg);
 static void can_irq_config(void);
-
 
 int32_t can_cfg_load(can_eeprom_cfg_t *pstcCfg)
 {
@@ -52,68 +59,12 @@ int32_t can_cfg_save(const can_eeprom_cfg_t *pstcCfg)
     return at24c512_wirte(CAN_EEPROM_BASE_ADDR, (const uint8_t *)pstcCfg, sizeof(can_eeprom_cfg_t));
 }
 
-void can_init_config(const can_eeprom_cfg_t *pstcCfg) {
-    stc_can_init_t stc_can_init;        // 仲裁CAN配置
-    stc_canfd_config_t stc_can_fd;      // CAN-FD 数据段配置
-    stc_can_filter_config_t stc_can_filter[CAN_FILTER_MAX];       // 过滤器配置
-    uint8_t i = 0U;
-
-    if (can_cfg_check(pstcCfg) != LL_OK) {
-        while(1);
-    }
-
-    (void)CAN_StructInit(&stc_can_init);
-    // 仲裁段波特率（经典 CAN 与 CAN-FD 共用 SBT 寄存器）
-    stc_can_init.stcBitCfg.u32Prescaler = pstcCfg->classic.prescaler;
-    stc_can_init.stcBitCfg.u32TimeSeg1  = pstcCfg->classic.time_seg1;
-    stc_can_init.stcBitCfg.u32TimeSeg2  = pstcCfg->classic.time_seg2;
-    stc_can_init.stcBitCfg.u32SJW       = pstcCfg->classic.sjw;
-    stc_can_init.u8WorkMode             = pstcCfg->work_mode;
-
-    // CAN-FD 数据段波特率
-    if (pstcCfg->fd.fd_enable != 0U) {
-        (void)CAN_FD_StructInit(&stc_can_fd);
-        stc_can_fd.stcBitCfg.u32Prescaler   = pstcCfg->fd.fast.prescaler;
-        stc_can_fd.stcBitCfg.u32TimeSeg1    = pstcCfg->fd.fast.time_seg1;
-        stc_can_fd.stcBitCfg.u32TimeSeg2    = pstcCfg->fd.fast.time_seg2;
-        stc_can_fd.stcBitCfg.u32SJW         = pstcCfg->fd.fast.sjw;
-        stc_can_fd.u8TDC                    = (pstcCfg->fd.tdc_enable != 0U) ? CAN_FD_TDC_ENABLE : CAN_FD_TDC_DISABLE;
-        stc_can_fd.u8SSPOffset              = (uint8_t)pstcCfg->fd.fast.time_seg1;
-        stc_can_fd.u8Mode                   = (pstcCfg->fd.fd_mode != 0U) ? CAN_FD_MD_ISO : CAN_FD_MD_BOSCH;
-        stc_can_init.pstcCanFd = &stc_can_fd;
-        CAN_FD_Cmd(CAN_UNIT, ENABLE);
-    }
-
-    // 过滤器：前 filter_count 个槽位连续启用 
-    for (i = 0U; i < pstcCfg->filter_count; i++) {
-        stc_can_filter[i].u32ID     = pstcCfg->filter[i].id;
-        stc_can_filter[i].u32IDMask = pstcCfg->filter[i].mask;
-        stc_can_filter[i].u32IDType = can_id_type_to_ddl(pstcCfg->filter[i].id_type);
-    }
-    if (pstcCfg->filter_count > 0U) {
-        stc_can_init.pstcFilter      = stc_can_filter;
-        stc_can_init.u16FilterSelect = (uint16_t)((1UL << pstcCfg->filter_count) - 1UL);
-    } else {
-        stc_can_filter[0].u32ID     = 0U;
-        stc_can_filter[0].u32IDMask = 0x1FFFFFFFUL;
-        stc_can_filter[0].u32IDType = CAN_ID_STD_EXT;
-        stc_can_init.pstcFilter      = stc_can_filter;
-        stc_can_init.u16FilterSelect = CAN_FILTER1;
-    }
-
-    FCG_Fcg1PeriphClockCmd(CAN_PERIPH_CLK, ENABLE);
-
-    (void)CAN_Init(CAN_UNIT, &stc_can_init);
-    CAN_IntCmd(CAN_UNIT, CAN_INT_ALL, DISABLE);
-    CAN_IntCmd(CAN_UNIT, CAN_INT_SEL, ENABLE);
-}
 void can_init(void) {
     can_eeprom_cfg_t stcCfg;
     int32_t i32Ret;
 
     i32Ret = can_cfg_load(&stcCfg);
     if (i32Ret != LL_OK) {
-        /* 新 EEPROM（全 0xFF）或数据损坏：使用默认配置 */
         can_cfg_default(&stcCfg);
     }
     can_clock_config(&stcCfg);
@@ -122,33 +73,62 @@ void can_init(void) {
     can_irq_config();
 }
 
+void can_reinit(void) {
+    
+    can_eeprom_cfg_t stcCfg;
+    int32_t i32Ret;
+
+    i32Ret = can_cfg_load(&stcCfg);
+    if (i32Ret != LL_OK) {
+        can_cfg_default(&stcCfg);
+    }
+    
+    NVIC_DisableIRQ(CAN_INT_IRQn);  // 关中断
+    can_rx_head = can_rx_tail = 0;  // 清空接收缓存
+    FCG_Fcg1PeriphClockCmd(CAN_PERIPH_CLK, DISABLE);
+    can_clock_config(&stcCfg);
+    can_init_config(&stcCfg);
+    can_irq_config();
+}
+
 // CAN 中断处理函数
 void CAN_IRQ_HANDLER(void) {
     uint32_t u32Status;
     stc_can_error_info_t stcErr;
-
+    rt_event_send(os_led_evt, OS_LED_EVT_CAN_RX);
+    
     u32Status = CAN_GetStatusValue(CAN_UNIT);
     if (u32Status != 0U) {
         CAN_ClearStatus(CAN_UNIT, u32Status);
     }
 
     if ((u32Status & CAN_FLAG_PTB_TX) != 0U) {
+        rt_sem_release(can_tx_sem);
         //DDL_Printf("PTB transmitted.\r\n");
         //m_u8PTBTxFlag = 1U;
     }
 
     if ((u32Status & CAN_FLAG_RX) != 0U) {
-        
-        //DDL_Printf("Received a frame.\r\n");
-        //m_u8RxFlag = 1U;
+        stc_can_rx_frame_t stc_tmp;
+        while(CAN_GetRxFrame(CAN_UNIT, &stc_tmp) == LL_OK) {
+            uint16_t next = (uint16_t)((can_rx_head + 1U) % CAN_RX_FRAME_NUM);
+            if (next == can_rx_tail) {
+                continue;
+            }
+            can_rx_frame[can_rx_head] = stc_tmp;
+            can_rx_head = next;
+        }
+        rt_sem_release(can_rx_sem);
     }
 
     if ((u32Status & CAN_FLAG_ERR_INT) != 0U) {
         if ((u32Status & CAN_FLAG_BUS_OFF) != 0U) {
+            //task_os_led_flash(20);
             //m_u8Busoff = 1U;
             //DDL_Printf("---> CAN BUS OFF\r\n");
         } else {
             (void)CAN_GetErrorInfo(CAN_UNIT, &stcErr);
+            //task_os_led_flash(20);
             //DDL_Printf("---> CAN error type: %u, %s\r\n", stcErr.u8ErrorType, m_s8ErrorTypeStr[stcErr.u8ErrorType]);
         }
     }
@@ -304,6 +284,62 @@ static void can_clock_config(const can_eeprom_cfg_t *pstcCfg) {
 static void can_pin_config(void) {
     GPIO_SetFunc(CAN_TX_PORT, CAN_TX_PIN, CAN_TX_PIN_FUNC);
     GPIO_SetFunc(CAN_RX_PORT, CAN_RX_PIN, CAN_RX_PIN_FUNC);
+}
+
+static void can_init_config(const can_eeprom_cfg_t *pstcCfg) {
+    stc_can_init_t stc_can_init;        // 仲裁CAN配置
+    stc_canfd_config_t stc_can_fd;      // CAN-FD 数据段配置
+    stc_can_filter_config_t stc_can_filter[CAN_FILTER_MAX];       // 过滤器配置
+    uint8_t i = 0U;
+
+    if (can_cfg_check(pstcCfg) != LL_OK) {
+        while(1);
+    }
+
+    (void)CAN_StructInit(&stc_can_init);
+    // 仲裁段波特率（经典 CAN 与 CAN-FD 共用 SBT 寄存器）
+    stc_can_init.stcBitCfg.u32Prescaler = pstcCfg->classic.prescaler;
+    stc_can_init.stcBitCfg.u32TimeSeg1  = pstcCfg->classic.time_seg1;
+    stc_can_init.stcBitCfg.u32TimeSeg2  = pstcCfg->classic.time_seg2;
+    stc_can_init.stcBitCfg.u32SJW       = pstcCfg->classic.sjw;
+    stc_can_init.u8WorkMode             = pstcCfg->work_mode;
+
+    // CAN-FD 数据段波特率
+    if (pstcCfg->fd.fd_enable != 0U) {
+        (void)CAN_FD_StructInit(&stc_can_fd);
+        stc_can_fd.stcBitCfg.u32Prescaler   = pstcCfg->fd.fast.prescaler;
+        stc_can_fd.stcBitCfg.u32TimeSeg1    = pstcCfg->fd.fast.time_seg1;
+        stc_can_fd.stcBitCfg.u32TimeSeg2    = pstcCfg->fd.fast.time_seg2;
+        stc_can_fd.stcBitCfg.u32SJW         = pstcCfg->fd.fast.sjw;
+        stc_can_fd.u8TDC                    = (pstcCfg->fd.tdc_enable != 0U) ? CAN_FD_TDC_ENABLE : CAN_FD_TDC_DISABLE;
+        stc_can_fd.u8SSPOffset              = (uint8_t)pstcCfg->fd.fast.time_seg1;
+        stc_can_fd.u8Mode                   = (pstcCfg->fd.fd_mode != 0U) ? CAN_FD_MD_ISO : CAN_FD_MD_BOSCH;
+        stc_can_init.pstcCanFd = &stc_can_fd;
+        
+    }
+
+    // 过滤器：前 filter_count 个槽位连续启用 
+    for (i = 0U; i < pstcCfg->filter_count; i++) {
+        stc_can_filter[i].u32ID     = pstcCfg->filter[i].id;
+        stc_can_filter[i].u32IDMask = pstcCfg->filter[i].mask;
+        stc_can_filter[i].u32IDType = can_id_type_to_ddl(pstcCfg->filter[i].id_type);
+    }
+    if (pstcCfg->filter_count > 0U) {
+        stc_can_init.pstcFilter      = stc_can_filter;
+        stc_can_init.u16FilterSelect = (uint16_t)((1UL << pstcCfg->filter_count) - 1UL);
+    } else {
+        stc_can_filter[0].u32ID     = 0U;
+        stc_can_filter[0].u32IDMask = 0x1FFFFFFFUL;
+        stc_can_filter[0].u32IDType = CAN_ID_STD_EXT;
+        stc_can_init.pstcFilter      = stc_can_filter;
+        stc_can_init.u16FilterSelect = CAN_FILTER1;
+    }
+
+    FCG_Fcg1PeriphClockCmd(CAN_PERIPH_CLK, ENABLE);
+    CAN_FD_Cmd(CAN_UNIT, ENABLE);
+    (void)CAN_Init(CAN_UNIT, &stc_can_init);
+    CAN_IntCmd(CAN_UNIT, CAN_INT_ALL, DISABLE);
+    CAN_IntCmd(CAN_UNIT, CAN_INT_SEL, ENABLE);
 }
 
 static void can_irq_config(void) {
