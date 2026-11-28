@@ -13,7 +13,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME comm-dongle)
+set(CMAKE_PROJECT_NAME usb-box)
 
 set(FIRMWARE_VERSION_STR "1.0.0")
 set(FIRMWARE_VERSION "")

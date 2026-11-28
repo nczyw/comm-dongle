@@ -4,19 +4,17 @@
 
 #include "usb_dev_desc.h"
 #include "usb_dev_stdreq.h"
+#include "at24c512.h"
+#include "hc32_ll_efm.h"
+#include <string.h>
 
-// =============== 设备 VID / PID（可改成你自己的） ===============
-// 注意：不要和已有设备冲突，PID 用了 0x4604，和官方 CDC 例程的 0x4603 区分开
+// =============== 设备 VID / PID ===============
+// 注意：不要和已有设备冲突
 #define DEV_VID                        (0x2E88)
-#define DEV_PID                        (0x574A)
+#define DEV_PID                        (0x4603)
 
-// =============== 字符串描述符内容 ===============
+// 语言 ID（字符串描述符用）
 #define DEV_LANGID_STRING              (0x409)              // 英语（美国）
-#define DEV_MANUFACTURER_STRING        ("Rayyi-tech")
-#define DEV_PRODUCT_FS_STRING          ("Rayyi MultiLink USB Interface Box")
-#define DEV_SERIALNUMBER_FS_STRING     ("00000000050C")
-#define DEV_CONFIGURATION_FS_STRING    ("MultiLink USB Interface Box")
-#define DEV_INTERFACE_FS_STRING        ("MultiLink USB Interface Box Interface")
 
 // =============== 函数前置声明 ===============
 uint8_t *usb_dev_desc(uint16_t *length);
@@ -72,6 +70,10 @@ __USB_ALIGN_BEGIN static uint8_t USB_DEV_LangIDDesc[USB_SIZ_STRING_LANGID] = {
 
 // =============== 字符串描述符临时缓冲 ===============
 __USB_ALIGN_BEGIN static uint8_t usb_dev_strdesc[USB_MAX_STR_DESC_SIZ];
+
+// =============== 从 EEPROM 加载的描述符字符串（RAM 缓存） ===============
+// getter 只读这里，绝不在此处做 I2C（getter 运行在 USB 中断上下文）
+static usb_desc_cfg_t g_desc_cfg;
 
 // =============== MS OS 字符串描述符（WCID 1.0，免驱主力） ===============
 // Windows 枚举时读 0xEE 字符串，得知"用 vendor 请求 0x01 继续查询"，
@@ -154,35 +156,35 @@ uint8_t *usb_dev_langiddesc(uint16_t *length)
 // 返回产品字符串描述符
 uint8_t *usb_dev_productdesc(uint16_t *length)
 {
-    usb_getstring((uint8_t *)DEV_PRODUCT_FS_STRING, usb_dev_strdesc, length);
+    usb_getstring((uint8_t *)g_desc_cfg.prod, usb_dev_strdesc, length);
     return usb_dev_strdesc;
 }
 
 // 返回制造商字符串描述符
 uint8_t *usb_dev_manufacturerstr(uint16_t *length)
 {
-    usb_getstring((uint8_t *)DEV_MANUFACTURER_STRING, usb_dev_strdesc, length);
+    usb_getstring((uint8_t *)g_desc_cfg.man, usb_dev_strdesc, length);
     return usb_dev_strdesc;
 }
 
 // 返回序列号字符串描述符
 uint8_t *usb_dev_serialstr(uint16_t *length)
 {
-    usb_getstring((uint8_t *)DEV_SERIALNUMBER_FS_STRING, usb_dev_strdesc, length);
+    usb_getstring((uint8_t *)g_desc_cfg.sn, usb_dev_strdesc, length);
     return usb_dev_strdesc;
 }
 
 // 返回配置字符串描述符
 uint8_t *usb_dev_configstrdesc(uint16_t *length)
 {
-    usb_getstring((uint8_t *)DEV_CONFIGURATION_FS_STRING, usb_dev_strdesc, length);
+    usb_getstring((uint8_t *)g_desc_cfg.cfg, usb_dev_strdesc, length);
     return usb_dev_strdesc;
 }
 
 // 返回接口字符串描述符
 uint8_t *usb_dev_intfstrdesc(uint16_t *length)
 {
-    usb_getstring((uint8_t *)DEV_INTERFACE_FS_STRING, usb_dev_strdesc, length);
+    usb_getstring((uint8_t *)g_desc_cfg.intf, usb_dev_strdesc, length);
     return usb_dev_strdesc;
 }
 
@@ -212,4 +214,133 @@ uint8_t *usb_dev_getmsos20(uint16_t *length)
 {
     *length = (uint16_t)sizeof(usb_dev_msos20);
     return usb_dev_msos20;
+}
+
+// =============== EEPROM 描述符字符串的读写 ===============
+
+// 拷贝字符串到定长字段，写入长度并补 '\0'
+static void desc_copy(uint8_t *len, char *dst, uint8_t max, const char *src)
+{
+    uint8_t n = 0U;
+
+    while ((src[n] != '\0') && (n < max)) {
+        n++;
+    }
+    (void)memcpy(dst, src, n);
+    dst[n] = '\0';
+    *len = n;
+}
+
+// CRC16-CCITT（poly 0x1021, init 0xFFFF）
+static uint16_t desc_crc16(const uint8_t *data, uint32_t len)
+{
+    uint16_t crc = 0xFFFFU;
+    uint32_t i;
+    uint8_t  b;
+
+    for (i = 0U; i < len; i++) {
+        crc ^= (uint16_t)((uint16_t)data[i] << 8U);
+        for (b = 0U; b < 8U; b++) {
+            if ((crc & 0x8000U) != 0U) {
+                crc = (uint16_t)((crc << 1U) ^ 0x1021U);
+            } else {
+                crc = (uint16_t)(crc << 1U);
+            }
+        }
+    }
+    return crc;
+}
+
+// 用芯片唯一 ID（96bit）生成 24 位十六进制默认序列号
+// 输出顺序：u32UniqueID2 -> u32UniqueID1 -> u32UniqueID0（每个字内部小端，低字节在前）
+// 与 UID 严格一一映射，不做压缩，确保每片唯一、同片稳定
+static void uid_to_serial(char *out)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    stc_efm_unique_id_t uid;
+    uint32_t words[3];
+    uint8_t  i;
+    uint8_t  j;
+    uint8_t  k = 0U;
+
+    EFM_GetUID(&uid);
+    words[0] = uid.u32UniqueID2;
+    words[1] = uid.u32UniqueID1;
+    words[2] = uid.u32UniqueID0;
+
+    for (i = 0U; i < 3U; i++) {
+        for (j = 0U; j < 4U; j++) {
+            uint8_t byte = (uint8_t)(words[i] >> ((3U - j) * 8U));   // 大端：高字节先
+            out[k++] = hex[(byte >> 4) & 0x0FU];
+            out[k++] = hex[byte & 0x0FU];
+        }
+    }
+    out[24U] = '\0';
+}
+
+// 载入默认值（EEPROM 为空或数据无效时）
+static void desc_apply_default(void)
+{
+    (void)memset(&g_desc_cfg, 0, sizeof(g_desc_cfg));
+    g_desc_cfg.magic   = USB_DESC_MAGIC;
+    g_desc_cfg.version = USB_DESC_VERSION;
+
+    desc_copy(&g_desc_cfg.len_man,  g_desc_cfg.man,  USB_DESC_LEN_MAN,  USB_DESC_DEF_MAN);
+    desc_copy(&g_desc_cfg.len_prod, g_desc_cfg.prod, USB_DESC_LEN_PROD, USB_DESC_DEF_PROD);
+
+    uid_to_serial(g_desc_cfg.sn);               // 默认序列号：芯片 UID 派生
+    g_desc_cfg.len_sn = (uint8_t)strlen(g_desc_cfg.sn);
+
+    desc_copy(&g_desc_cfg.len_cfg,  g_desc_cfg.cfg,  USB_DESC_LEN_CFG,  USB_DESC_DEF_CFG);
+    desc_copy(&g_desc_cfg.len_intf, g_desc_cfg.intf, USB_DESC_LEN_INTF, USB_DESC_DEF_INTF);
+}
+
+void usb_desc_cfg_load(void)
+{
+    usb_desc_cfg_t tmp;
+    uint16_t crc;
+    uint8_t  ok = 0U;
+
+    if (at24c512_read(USB_DESC_EEPROM_ADDR, (uint8_t *)&tmp, sizeof(tmp)) == LL_OK) {
+        if ((tmp.magic == USB_DESC_MAGIC) && (tmp.version == USB_DESC_VERSION)) {
+            crc = desc_crc16((const uint8_t *)&tmp,
+                             (uint32_t)(sizeof(tmp) - sizeof(uint16_t)));
+            if (crc == tmp.crc) {
+                // 长度必须合法
+                if ((tmp.len_man  <= USB_DESC_LEN_MAN)  &&
+                    (tmp.len_prod <= USB_DESC_LEN_PROD) &&
+                    (tmp.len_sn   <= USB_DESC_LEN_SN)   &&
+                    (tmp.len_cfg  <= USB_DESC_LEN_CFG)  &&
+                    (tmp.len_intf <= USB_DESC_LEN_INTF)) {
+                    // 强制 '\0' 结尾，供 usb_getstring 使用
+                    tmp.man[tmp.len_man]   = '\0';
+                    tmp.prod[tmp.len_prod] = '\0';
+                    tmp.sn[tmp.len_sn]     = '\0';
+                    tmp.cfg[tmp.len_cfg]   = '\0';
+                    tmp.intf[tmp.len_intf] = '\0';
+                    g_desc_cfg = tmp;
+                    ok = 1U;
+                }
+            }
+        }
+    }
+
+    if (ok == 0U) {
+        desc_apply_default();                   // 新 EEPROM(全 0xFF)/损坏 -> 默认值
+    }
+}
+
+int32_t usb_desc_cfg_save(void)
+{
+    uint16_t crc;
+
+    g_desc_cfg.magic    = USB_DESC_MAGIC;
+    g_desc_cfg.version  = USB_DESC_VERSION;
+    g_desc_cfg.reserved = 0U;
+    crc = desc_crc16((const uint8_t *)&g_desc_cfg,
+                     (uint32_t)(sizeof(g_desc_cfg) - sizeof(uint16_t)));
+    g_desc_cfg.crc = crc;
+
+    return at24c512_wirte(USB_DESC_EEPROM_ADDR,
+                          (const uint8_t *)&g_desc_cfg, sizeof(g_desc_cfg));
 }

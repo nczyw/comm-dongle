@@ -89,8 +89,8 @@ __USB_ALIGN_BEGIN static uint8_t usb_dev_winusb_cfgdesc[USB_WINUSB_CONFIG_DESC_S
     0x01,   /* bNumInterfaces: 1 interface for WinUSB */
     0x01,   /* bConfigurationValue: Configuration value */
     0x00,   /* iConfiguration: Index of string descriptor describing the configuration */
-    0xC0,   /* bmAttributes: self powered */
-    0x32,   /* MaxPower 50*2 mA */
+    0x80,   /* bmAttributes: no self powered */
+    0xEE,   /* MaxPower 238*2 mA */
 
     /*---------------------------------------------------------------------------*/
     /*Data class interface descriptor*/
