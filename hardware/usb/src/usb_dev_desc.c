@@ -8,7 +8,7 @@
 // =============== 设备 VID / PID（可改成你自己的） ===============
 // 注意：不要和已有设备冲突，PID 用了 0x4604，和官方 CDC 例程的 0x4603 区分开
 #define DEV_VID                        (0x2E88)
-#define DEV_PID                        (0x4604)
+#define DEV_PID                        (0x574A)
 
 // =============== 字符串描述符内容 ===============
 #define DEV_LANGID_STRING              (0x409)              // 英语（美国）
@@ -26,7 +26,7 @@ uint8_t *usb_dev_productdesc(uint16_t *length);
 uint8_t *usb_dev_serialstr(uint16_t *length);
 uint8_t *usb_dev_configstrdesc(uint16_t *length);
 uint8_t *usb_dev_intfstrdesc(uint16_t *length);
-uint8_t *usb_dev_winusbosstr(uint16_t *length);   // 新增：MS OS 字符串
+uint8_t *usb_dev_winusbosstr(uint16_t *length);   // MS OS 1.0（0xEE）字符串
 
 // =============== 描述符回调表 ===============
 usb_dev_desc_func user_desc = {
@@ -37,7 +37,7 @@ usb_dev_desc_func user_desc = {
     &usb_dev_serialstr,
     &usb_dev_configstrdesc,
     &usb_dev_intfstrdesc,
-    &usb_dev_winusbosstr,     // 第 8 项：启用 MS OS 1.0（0xEE），与 2.0(BOS) 同时可用
+    &usb_dev_winusbosstr,     // 第 8 项：启用 MS OS 1.0（0xEE），实测最能被 Windows 采纳
 };
 
 // =============== 设备描述符 ===============
@@ -73,9 +73,9 @@ __USB_ALIGN_BEGIN static uint8_t USB_DEV_LangIDDesc[USB_SIZ_STRING_LANGID] = {
 // =============== 字符串描述符临时缓冲 ===============
 __USB_ALIGN_BEGIN static uint8_t usb_dev_strdesc[USB_MAX_STR_DESC_SIZ];
 
-// =============== MS OS 字符串描述符（WCID 关键） ===============
-// 作用：Windows 枚举时读 0xEE 字符串，得知"用 vendor 请求 0x01 继续查询"，
-//       随后按请求返回 Compat ID（"WINUSB"），Windows 即自动绑定 WinUSB 驱动
+// =============== MS OS 字符串描述符（WCID 1.0，免驱主力） ===============
+// Windows 枚举时读 0xEE 字符串，得知"用 vendor 请求 0x01 继续查询"，
+// 随后按请求返回 Compat ID（"WINUSB"），Windows 即自动绑定 WinUSB 驱动
 __USB_ALIGN_BEGIN static uint8_t usb_dev_msosstr[] = {
     0x12, 0x03,                              // bLength=18, bDescriptorType=STRING
     'M', 0, 'S', 0, 'F', 0, 'T', 0,          // "MSFT100"（UTF-16LE）
@@ -186,7 +186,7 @@ uint8_t *usb_dev_intfstrdesc(uint16_t *length)
     return usb_dev_strdesc;
 }
 
-// 返回 MS OS 字符串描述符（Windows 探测 WCID 1.0 用，保留兼容）
+// 返回 MS OS 字符串描述符（Windows 探测 WCID 1.0 用）
 uint8_t *usb_dev_winusbosstr(uint16_t *length)
 {
     *length = (uint16_t)sizeof(usb_dev_msosstr);
